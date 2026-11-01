@@ -8,5 +8,5 @@
   "hotkey": "ctrl+alt+r",
   "animation_seconds": 2.4,
   "ring_radius": 31,
-  "ring_thickness": 1
+  "ring_thickness": 5
 }

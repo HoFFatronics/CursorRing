@@ -4,6 +4,8 @@ CursorRing highlights the mouse pointer with a clear, adjustable ring. It is des
 
 The ring uses a bright color with contrasting black and white outlines to stay visible over varied map backgrounds. You can change its color, diameter, and outline thickness while the program is running. A brief animated effect helps viewers find the pointer.
 
+CursorRing uses the Windows default arrow image as the pointer artwork and places the ring around its original click hotspot. Other pointer shapes, such as the hand pointer, remain unchanged.
+
 ## Install and run
 
 Requirements: **Windows 10 or 11**, **Python 3.10 or newer**, and **Pillow**.
@@ -30,7 +32,7 @@ Keep the terminal open while CursorRing is running. Press **Ctrl+C** or click th
 | **Ctrl+Shift + mouse wheel** | Increase or decrease the ring diameter. Scroll up to enlarge it; down to reduce it. |
 | **Ctrl+Alt + mouse wheel** | Increase or decrease the outline thickness. Scroll up to thicken it; down to thin it. |
 
-Each wheel step changes the diameter by 4 pixels. Diameter and thickness stay within supported limits so the ring fits inside the cursor image. Both settings are saved in `config.json` and retained after restarting CursorRing.
+Each wheel step changes the diameter by 4 pixels. The diameter ranges from 30 to 90 pixels, allowing it to grow to about twice its default size. Outline thickness ranges from 1 to 9 pixels and changes by 1 pixel per wheel step. Both settings are saved in `config.json` and retained after restarting CursorRing.
 
 The find animation pulses and blinks the ring for a short time while keeping the mouse arrow visible. Press **Ctrl+Alt+R** again during the animation to restart it. The animation does not run while the normal Windows pointer is selected.
 
@@ -63,9 +65,11 @@ Profile shortcuts follow the order of the profiles in the `colors` section of `c
   "hotkey": "ctrl+alt+r",
   "animation_seconds": 2.4,
   "ring_radius": 23,
-  "ring_thickness": 1
+  "ring_thickness": 5
 }
 ```
+
+`ring_radius` controls the base ring radius (15–45 pixels). `ring_thickness` controls the colored band width (1–9 pixels); the black and white outlines remain wider for contrast. Both settings can be adjusted with the mouse wheel while CursorRing is running.
 
 The color settings window is the easiest way to change profile colors. You can also start the program with a different profile or configuration file:
 

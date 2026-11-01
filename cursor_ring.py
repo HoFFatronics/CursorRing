@@ -20,16 +20,16 @@ import sys
 import tempfile
 import time
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 SIZE = 96
-CENTER = SIZE // 2
 RADIUS = 23
 MIN_RADIUS = 15
-MAX_RADIUS = 31
+MAX_RADIUS = 45
 RADIUS_STEP = 2
 MIN_THICKNESS = 1
-MAX_THICKNESS = 3
+MAX_THICKNESS = 9
+DEFAULT_THICKNESS = 5
 MIN_PULSE_RADIUS = 18
 MAX_PULSE_RADIUS = 36
 PULSE_COUNT = 3
@@ -39,7 +39,7 @@ IMAGE_CURSOR = 2
 LR_LOADFROMFILE = 0x0010
 SPI_SETCURSORS = 0x0057
 OCR_NORMAL = 32512
-OCR_HAND = 32649
+IDC_ARROW = 32512
 CONFIG_PATH = Path(__file__).with_name("config.json")
 DEFAULT_SETTINGS = {
     "default_color": "yellow",
@@ -47,7 +47,7 @@ DEFAULT_SETTINGS = {
     "hotkey": "ctrl+alt+r",
     "animation_seconds": 2.4,
     "ring_radius": RADIUS,
-    "ring_thickness": 1,
+    "ring_thickness": DEFAULT_THICKNESS,
 }
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
@@ -94,6 +94,57 @@ class MouseHookData(ctypes.Structure):
         ("time", wintypes.DWORD),
         ("dwExtraInfo", ctypes.c_size_t),
     ]
+
+
+class Bitmap(ctypes.Structure):
+    _fields_ = [
+        ("bmType", wintypes.LONG),
+        ("bmWidth", wintypes.LONG),
+        ("bmHeight", wintypes.LONG),
+        ("bmWidthBytes", wintypes.LONG),
+        ("bmPlanes", wintypes.WORD),
+        ("bmBitsPixel", wintypes.WORD),
+        ("bmBits", ctypes.c_void_p),
+    ]
+
+
+class IconInfo(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", wintypes.BOOL),
+        ("xHotspot", wintypes.DWORD),
+        ("yHotspot", wintypes.DWORD),
+        ("hbmMask", wintypes.HANDLE),
+        ("hbmColor", wintypes.HANDLE),
+    ]
+
+
+class BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+class RGBQuad(ctypes.Structure):
+    _fields_ = [
+        ("rgbBlue", wintypes.BYTE),
+        ("rgbGreen", wintypes.BYTE),
+        ("rgbRed", wintypes.BYTE),
+        ("rgbReserved", wintypes.BYTE),
+    ]
+
+
+class BitmapInfo(ctypes.Structure):
+    _fields_ = [("bmiHeader", BitmapInfoHeader), ("bmiColors", RGBQuad * 2)]
 
 
 class ConfigurationError(ValueError):
@@ -146,6 +197,23 @@ def adjust_ring_geometry(radius, thickness, wheel_delta, adjust_diameter):
     else:
         thickness = max(MIN_THICKNESS, min(MAX_THICKNESS, thickness + direction * steps))
     return radius, thickness
+
+
+def cursor_canvas_size(radius, thickness, system_arrow=None, arrow_hotspot=(0, 0)):
+    """Return an even canvas size that contains the ring and its outlines."""
+    outer_stroke = thickness + 6
+    ring_extent = max(radius, MAX_PULSE_RADIUS) + 3 + outer_stroke / 2
+    arrow_extent = 25
+    if system_arrow is not None:
+        arrow_width, arrow_height = system_arrow.size
+        hotspot_x, hotspot_y = arrow_hotspot
+        arrow_extent = max(
+            math.hypot(x, y)
+            for x in (hotspot_x, arrow_width - hotspot_x)
+            for y in (hotspot_y, arrow_height - hotspot_y)
+        )
+    extent = max(ring_extent, arrow_extent) + 1
+    return max(SIZE, 2 * math.ceil(extent))
 
 
 def ensure_config(path):
@@ -275,10 +343,10 @@ def load_settings(path):
             or not MIN_RADIUS <= radius <= MAX_RADIUS
             or (radius - MIN_RADIUS) % RADIUS_STEP):
         raise ConfigurationError(f"ring_radius must be an odd integer from {MIN_RADIUS} to {MAX_RADIUS}.")
-    thickness = settings.get("ring_thickness", MIN_THICKNESS)
+    thickness = settings.get("ring_thickness", DEFAULT_THICKNESS)
     if (isinstance(thickness, bool) or not isinstance(thickness, int)
             or not MIN_THICKNESS <= thickness <= MAX_THICKNESS):
-        raise ConfigurationError(f"ring_thickness must be an integer from {MIN_THICKNESS} to {MAX_THICKNESS}.")
+        raise ConfigurationError(f"ring_thickness must be an integer from {MIN_THICKNESS} to {MAX_THICKNESS} pixels.")
     duration = settings.get("animation_seconds", 2.4)
     if (isinstance(duration, bool) or not isinstance(duration, (int, float))
             or not math.isfinite(duration) or not 0.5 <= duration <= 10):
@@ -286,60 +354,69 @@ def load_settings(path):
     return selected, colors, hotkey, float(duration), radius, thickness
 
 
-def create_cursor(path, color, radius=RADIUS, show_ring=True, thickness=MIN_THICKNESS):
+def create_cursor(path, color, radius=RADIUS, show_ring=True, thickness=DEFAULT_THICKNESS,
+                  canvas_size=None, system_arrow=None, arrow_hotspot=(0, 0)):
     """Build a 32-bit .cur file with a black/white bordered colored ring."""
     scale = 4
-    canvas = Image.new("RGBA", (SIZE * scale, SIZE * scale), (0, 0, 0, 0))
+    size = canvas_size or cursor_canvas_size(radius, thickness, system_arrow, arrow_hotspot)
+    center = size // 2
+    canvas = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
-    center = CENTER * scale
+    center *= scale
 
     # From outside to inside: black, white, chosen color. The extra
     # contours preserve visibility on bright AND dark regions of a map.
     if show_ring:
-        extra_width = (thickness - MIN_THICKNESS) * 2
         for current_radius, width, rgba in (
-            (radius + 3, 11 + extra_width, (0, 0, 0, 255)),
-            (radius + 1, 8 + extra_width, (255, 255, 255, 255)),
-            (radius, 5 + extra_width, color),
+            (radius + 3, thickness + 6, (0, 0, 0, 255)),
+            (radius + 1, thickness + 3, (255, 255, 255, 255)),
+            (radius, thickness, color),
         ):
             distance = current_radius * scale
             bounds = (center - distance, center - distance,
                       center + distance, center + distance)
             draw.ellipse(bounds, outline=rgba, width=width * scale)
 
-    # Arrow tip is the hotspot, centered within the ring.
-    outline = [(0, 0), (1, 21), (7, 15), (13, 25),
-               (18, 22), (12, 12), (21, 11)]
-    points = [((CENTER + x) * scale, (CENTER + y) * scale) for x, y in outline]
-    draw.polygon(points, fill="white")
-    draw.line(points + [points[0]], fill="black", width=2 * scale, joint="curve")
-    image = canvas.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
+    image = canvas.resize((size, size), Image.Resampling.LANCZOS)
+    if system_arrow is not None:
+        arrow_x = size // 2 - arrow_hotspot[0]
+        arrow_y = size // 2 - arrow_hotspot[1]
+        image.alpha_composite(system_arrow, dest=(arrow_x, arrow_y))
 
-    xor = b"".join(image.crop((0, y, SIZE, y + 1)).tobytes("raw", "BGRA")
-                   for y in range(SIZE - 1, -1, -1))
+    xor = b"".join(image.crop((0, y, size, y + 1)).tobytes("raw", "BGRA")
+                   for y in range(size - 1, -1, -1))
     alpha = image.getchannel("A")
-    stride = ((SIZE + 31) // 32) * 4
+    stride = ((size + 31) // 32) * 4
     mask = bytearray()
-    for y in range(SIZE - 1, -1, -1):
+    for y in range(size - 1, -1, -1):
         row = bytearray(stride)
-        for x in range(SIZE):
+        for x in range(size):
             if alpha.getpixel((x, y)) == 0:
                 row[x // 8] |= 0x80 >> (x % 8)
         mask.extend(row)
 
-    dib_header = struct.pack("<IiiHHIIiiII", 40, SIZE, SIZE * 2,
+    dib_header = struct.pack("<IiiHHIIiiII", 40, size, size * 2,
                              1, 32, 0, len(xor), 0, 0, 0, 0)
     bitmap = dib_header + xor + mask
     directory = struct.pack("<HHH", 0, 2, 1)
     # The hotspot is at the ring center for accurate clicks.
-    entry = struct.pack("<BBBBHHII", SIZE, SIZE, 0, 0,
-                        CENTER, CENTER, len(bitmap), 22)
+    entry = struct.pack("<BBBBHHII", size, size, 0, 0,
+                        size // 2, size // 2, len(bitmap), 22)
     path.write_bytes(directory + entry + bitmap)
 
 
 def windows_api():
     api = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    api.LoadCursorW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+    api.LoadCursorW.restype = wintypes.HANDLE
+    api.GetIconInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(IconInfo)]
+    api.GetIconInfo.restype = wintypes.BOOL
+    api.GetDC.argtypes = [wintypes.HWND]
+    api.GetDC.restype = wintypes.HANDLE
+    api.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HANDLE]
+    api.ReleaseDC.restype = ctypes.c_int
     api.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
                                wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
     api.LoadImageW.restype = wintypes.HANDLE
@@ -377,7 +454,100 @@ def windows_api():
     kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
     kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
     api.SetConsoleCtrlHandler = kernel32.SetConsoleCtrlHandler
+    gdi32.GetObjectW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p]
+    gdi32.GetObjectW.restype = ctypes.c_int
+    gdi32.GetDIBits.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.UINT,
+                                wintypes.UINT, ctypes.c_void_p,
+                                ctypes.POINTER(BitmapInfo), wintypes.UINT]
+    gdi32.GetDIBits.restype = ctypes.c_int
+    gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+    gdi32.DeleteObject.restype = wintypes.BOOL
+    api._gdi32 = gdi32
     return api
+
+
+def capture_system_arrow(api):
+    """Copy the Windows default arrow and its hotspot into a Pillow image."""
+    resource_id = ctypes.cast(ctypes.c_void_p(IDC_ARROW), wintypes.LPCWSTR)
+    cursor = api.LoadCursorW(None, resource_id)
+    if not cursor:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    info = IconInfo()
+    if not api.GetIconInfo(cursor, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    try:
+        if not info.hbmColor or not info.hbmMask:
+            raise OSError("The Windows default arrow does not expose color and mask bitmaps.")
+        bitmap = Bitmap()
+        if not api._gdi32.GetObjectW(info.hbmColor, ctypes.sizeof(bitmap), ctypes.byref(bitmap)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        width, height = bitmap.bmWidth, bitmap.bmHeight
+        if width <= 0 or height <= 0:
+            raise OSError("The Windows default arrow has invalid dimensions.")
+
+        dc = api.GetDC(None)
+        if not dc:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            color_info = BitmapInfo()
+            color_info.bmiHeader.biSize = ctypes.sizeof(BitmapInfoHeader)
+            color_info.bmiHeader.biWidth = width
+            color_info.bmiHeader.biHeight = -height
+            color_info.bmiHeader.biPlanes = 1
+            color_info.bmiHeader.biBitCount = 32
+            color_info.bmiHeader.biCompression = 0
+            color_info.bmiHeader.biSizeImage = width * height * 4
+            color_buffer = ctypes.create_string_buffer(width * height * 4)
+            lines = api._gdi32.GetDIBits(
+                dc, info.hbmColor, 0, height, color_buffer,
+                ctypes.byref(color_info), 0,
+            )
+            if lines != height:
+                raise ctypes.WinError(ctypes.get_last_error())
+            image = Image.frombytes("RGBA", (width, height), color_buffer.raw, "raw", "BGRA")
+
+            mask_info = BitmapInfo()
+            mask_info.bmiHeader.biSize = ctypes.sizeof(BitmapInfoHeader)
+            mask_info.bmiHeader.biWidth = width
+            mask_info.bmiHeader.biHeight = -height
+            mask_info.bmiHeader.biPlanes = 1
+            mask_info.bmiHeader.biBitCount = 1
+            mask_info.bmiHeader.biCompression = 0
+            mask_info.bmiHeader.biSizeImage = ((width + 31) // 32) * 4 * height
+            mask_info.bmiHeader.biClrUsed = 2
+            mask_info.bmiColors[0] = RGBQuad(0, 0, 0, 0)
+            mask_info.bmiColors[1] = RGBQuad(255, 255, 255, 0)
+            mask_stride = ((width + 31) // 32) * 4
+            mask_buffer = ctypes.create_string_buffer(mask_stride * height)
+            lines = api._gdi32.GetDIBits(
+                dc, info.hbmMask, 0, height, mask_buffer,
+                ctypes.byref(mask_info), 0,
+            )
+            if lines != height:
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            api.ReleaseDC(None, dc)
+
+        mask_alpha = bytearray(width * height)
+        raw_mask = mask_buffer.raw
+        for y in range(height):
+            row_offset = y * mask_stride
+            for x in range(width):
+                transparent = raw_mask[row_offset + x // 8] & (0x80 >> (x % 8))
+                mask_alpha[y * width + x] = 0 if transparent else 255
+        alpha = image.getchannel("A")
+        if alpha.getextrema()[1] == 0:
+            image.putalpha(Image.frombytes("L", (width, height), bytes(mask_alpha)))
+        else:
+            image.putalpha(ImageChops.darker(alpha, Image.frombytes("L", (width, height), bytes(mask_alpha))))
+        return image, (info.xHotspot, info.yHotspot)
+    finally:
+        if info.hbmColor:
+            api._gdi32.DeleteObject(info.hbmColor)
+        if info.hbmMask:
+            api._gdi32.DeleteObject(info.hbmMask)
 
 
 def restore(api):
@@ -386,36 +556,46 @@ def restore(api):
 
 
 def enable(api, path):
-    for cursor_id in (OCR_NORMAL, OCR_HAND):
-        handle = api.LoadImageW(None, str(path), IMAGE_CURSOR,
-                                SIZE, SIZE, LR_LOADFROMFILE)
-        if not handle:
-            raise ctypes.WinError(ctypes.get_last_error())
-        # SetSystemCursor assumes ownership of a successfully passed handle.
-        if not api.SetSystemCursor(handle, cursor_id):
-            error = ctypes.get_last_error()
-            api.DestroyCursor(handle)
-            raise ctypes.WinError(error)
+    with path.open("rb") as cursor_file:
+        cursor_file.seek(6)
+        width, height = struct.unpack("<BB", cursor_file.read(2))
+    width = width or 256
+    height = height or 256
+    handle = api.LoadImageW(None, str(path), IMAGE_CURSOR, width, height, LR_LOADFROMFILE)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    # SetSystemCursor assumes ownership of a successfully passed handle.
+    if not api.SetSystemCursor(handle, OCR_NORMAL):
+        error = ctypes.get_last_error()
+        api.DestroyCursor(handle)
+        raise ctypes.WinError(error)
 
 
-def prepare_frames(directory, color, radius=RADIUS, thickness=MIN_THICKNESS):
+def prepare_frames(directory, color, radius=RADIUS, thickness=DEFAULT_THICKNESS,
+                   system_arrow=None, arrow_hotspot=(0, 0)):
     """Precompute cursor images, so animation only changes the active image."""
     paths = {}
+    canvas_size = cursor_canvas_size(radius, thickness, system_arrow, arrow_hotspot)
     steady = directory / "normal.cur"
-    create_cursor(steady, color, radius=radius, thickness=thickness)
+    create_cursor(steady, color, radius=radius, thickness=thickness, canvas_size=canvas_size,
+                  system_arrow=system_arrow, arrow_hotspot=arrow_hotspot)
     paths["normal"] = steady
     hidden = directory / "arrow_only.cur"
-    create_cursor(hidden, color, show_ring=False, thickness=thickness)
+    create_cursor(hidden, color, show_ring=False, thickness=thickness, canvas_size=canvas_size,
+                  system_arrow=system_arrow, arrow_hotspot=arrow_hotspot)
     paths["hidden"] = hidden
     for pulse_radius in range(MIN_PULSE_RADIUS, MAX_PULSE_RADIUS + 1, 2):
         path = directory / f"ring_{pulse_radius}.cur"
-        create_cursor(path, color, radius=pulse_radius, thickness=thickness)
+        create_cursor(path, color, radius=pulse_radius, thickness=thickness,
+                      canvas_size=canvas_size, system_arrow=system_arrow,
+                      arrow_hotspot=arrow_hotspot)
         paths[pulse_radius] = path
     return paths
 
 
 def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
-        initial_profile, hotkey, duration, ring_radius, ring_thickness):
+        initial_profile, hotkey, duration, ring_radius, ring_thickness,
+        system_arrow, arrow_hotspot):
     modifiers, vk = parse_hotkey(hotkey)
     profile_ids = {hotkey_id: index for hotkey_id, index, _, _ in profile_hotkeys()}
     registered_ids = []
@@ -480,7 +660,8 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
                 directory = profile_dirs[name] / generation
                 directory.mkdir()
                 generated[name] = prepare_frames(
-                    directory, parse_hex_color(color_values[name]), radius, thickness
+                    directory, parse_hex_color(color_values[name]), radius, thickness,
+                    system_arrow, arrow_hotspot,
                 )
             return generated
 
@@ -518,6 +699,7 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
                         create_cursor(
                             normal_path, parse_hex_color(colors[name]),
                             radius=new_radius, thickness=new_thickness,
+                            system_arrow=system_arrow, arrow_hotspot=arrow_hotspot,
                         )
                         new_paths[name] = dict(profile_paths[name])
                         new_paths[name]["normal"] = normal_path
@@ -690,6 +872,7 @@ def main(argv=None):
 
     api = windows_api()
     try:
+        system_arrow, arrow_hotspot = capture_system_arrow(api)
         with tempfile.TemporaryDirectory() as tempdir:
             profile_names = list(colors)
             profile_paths = {}
@@ -699,11 +882,13 @@ def main(argv=None):
                 profile_dir.mkdir()
                 profile_dirs[name] = profile_dir
                 profile_paths[name] = prepare_frames(
-                    profile_dir, parse_hex_color(colors[name]), ring_radius, ring_thickness
+                    profile_dir, parse_hex_color(colors[name]), ring_radius, ring_thickness,
+                    system_arrow, arrow_hotspot,
                 )
             initial_profile = profile_names.index(chosen) + 1
             run(api, profile_paths, profile_dirs, profile_names, colors,
-                args.config, initial_profile, hotkey, duration, ring_radius, ring_thickness)
+                args.config, initial_profile, hotkey, duration, ring_radius, ring_thickness,
+                system_arrow, arrow_hotspot)
     except KeyboardInterrupt:
         pass
 

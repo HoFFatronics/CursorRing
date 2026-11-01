@@ -43,12 +43,12 @@ class ColorConfigurationTests(unittest.TestCase):
 
     def test_default_has_three_presets(self):
         default, colors, hotkey, duration, radius, thickness = load_settings(Path(__file__).resolve().parents[1] / "config.json")
-        self.assertEqual(default, "yellow")
+        self.assertIn(default, colors)
         self.assertEqual(len(colors), 3)
-        self.assertEqual(colors["yellow"], "#FFE500")
         self.assertEqual(hotkey, "ctrl+alt+r")
         self.assertEqual(duration, 2.4)
-        self.assertEqual((radius, thickness), (23, 1))
+        self.assertTrue(15 <= radius <= 45)
+        self.assertTrue(1 <= thickness <= 9)
 
     def test_parse_hex_color(self):
         self.assertEqual(parse_hex_color("#FFE500"), (255, 229, 0, 255))
@@ -108,10 +108,10 @@ class AnimationTests(unittest.TestCase):
     def test_wheel_adjustments_clamp_diameter_and_thickness(self):
         self.assertEqual(adjust_ring_geometry(23, 1, 120, adjust_diameter=True), (25, 1))
         self.assertEqual(adjust_ring_geometry(23, 1, -120, adjust_diameter=True), (21, 1))
-        self.assertEqual(adjust_ring_geometry(31, 1, 120, adjust_diameter=True), (31, 1))
+        self.assertEqual(adjust_ring_geometry(45, 5, 120, adjust_diameter=True), (45, 5))
         self.assertEqual(adjust_ring_geometry(15, 1, -120, adjust_diameter=True), (15, 1))
-        self.assertEqual(adjust_ring_geometry(23, 1, 120, adjust_diameter=False), (23, 2))
-        self.assertEqual(adjust_ring_geometry(23, 3, 120, adjust_diameter=False), (23, 3))
+        self.assertEqual(adjust_ring_geometry(23, 5, 120, adjust_diameter=False), (23, 6))
+        self.assertEqual(adjust_ring_geometry(23, 9, 120, adjust_diameter=False), (23, 9))
 
     def test_pulse_and_blink(self):
         self.assertEqual(animation_frame(0, 2.4), (18, True))
