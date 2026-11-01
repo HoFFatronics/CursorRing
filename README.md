@@ -15,7 +15,7 @@ python cursor_ring.py
 
 On first launch, CursorRing creates `config.json` in the same folder as `cursor_ring.py`. The file stores the color profiles and ring settings.
 
-Keep the terminal open while CursorRing is running. Press **Ctrl+C** in the terminal to exit and restore the Windows pointer scheme.
+Keep the terminal open while CursorRing is running. Press **Ctrl+C** or click the terminal window's **X** button to exit; CursorRing attempts to restore the Windows pointer scheme in either case.
 
 ## Keyboard and mouse controls
 
@@ -83,4 +83,4 @@ The configured animation shortcut and duration can be changed in `config.json`. 
 
 CursorRing changes the Windows system pointer so it can be captured alongside the pointer in a recording. In OBS Studio, try **Window Capture** with **Capture Cursor** enabled and make a short test recording. Capture behavior can vary between applications and recording methods, so check the resulting video before using CursorRing for a presentation.
 
-> CursorRing changes the pointer across the entire Windows session, not just inside the recorded window. If the pointer is not restored after an unexpected exit, run `python cursor_ring.py --restore` or select the normal pointer scheme in Windows mouse settings.
+> CursorRing changes the pointer across the entire Windows session, not just inside the recorded window. If the process is forcibly terminated or the pointer is not restored, run `python cursor_ring.py --restore` or select the normal pointer scheme in Windows mouse settings.

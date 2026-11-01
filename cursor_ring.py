@@ -58,6 +58,10 @@ HC_ACTION = 0
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
 VK_MENU = 0x12
+CTRL_C_EVENT = 0
+CTRL_CLOSE_EVENT = 2
+CTRL_LOGOFF_EVENT = 5
+CTRL_SHUTDOWN_EVENT = 6
 HOTKEY_ID = 1
 PROFILE_HOTKEY_START = 2
 SETTINGS_HOTKEY_ID = 6
@@ -370,6 +374,9 @@ def windows_api():
     kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
     kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
     api.GetModuleHandleW = kernel32.GetModuleHandleW
+    kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
+    kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+    api.SetConsoleCtrlHandler = kernel32.SetConsoleCtrlHandler
     return api
 
 
@@ -415,6 +422,8 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
     cursor_modified = False
     mouse_hook_handle = None
     mouse_hook_proc = None
+    console_handler = None
+    console_handler_registered = False
     try:
         if not api.RegisterHotKey(None, HOTKEY_ID, modifiers, vk):
             raise OSError("Could not register the animation hotkey. Another program may already be using it.")
@@ -426,6 +435,25 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
         if not api.RegisterHotKey(None, SETTINGS_HOTKEY_ID, MOD_PROFILE, ord("0")):
             raise OSError("Could not register the settings shortcut Ctrl+Alt+0. Another program may already be using it.")
         registered_ids.append(SETTINGS_HOTKEY_ID)
+
+        console_handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+        def handle_console_control(event):
+            nonlocal cursor_modified
+            if event in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
+                if cursor_modified:
+                    try:
+                        restore(api)
+                        cursor_modified = False
+                    except Exception:
+                        return False
+                return True
+            return False
+
+        console_handler = console_handler_type(handle_console_control)
+        if not api.SetConsoleCtrlHandler(ctypes.cast(console_handler, ctypes.c_void_p), True):
+            raise ctypes.WinError(ctypes.get_last_error())
+        console_handler_registered = True
 
         cursor_modified = True  # ensure restore after partially failed installation
         current_profile = initial_profile
@@ -614,10 +642,15 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
             try:
                 if cursor_modified:
                     restore(api)
+                    cursor_modified = False
                     print("The Windows pointer has been restored.")
             finally:
-                for hotkey_id in registered_ids:
-                    api.UnregisterHotKey(None, hotkey_id)
+                try:
+                    if console_handler_registered:
+                        api.SetConsoleCtrlHandler(ctypes.cast(console_handler, ctypes.c_void_p), False)
+                finally:
+                    for hotkey_id in registered_ids:
+                        api.UnregisterHotKey(None, hotkey_id)
 
 
 def main(argv=None):
