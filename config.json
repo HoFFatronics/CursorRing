@@ -1,12 +1,12 @@
 {
   "default_color": "yellow",
   "colors": {
-    "yellow": "#FF0000",
+    "yellow": "#FFE500",
     "white": "#FFFFFF",
     "black": "#111111"
   },
   "hotkey": "ctrl+alt+r",
   "animation_seconds": 2.4,
-  "ring_radius": 31,
-  "ring_thickness": 5
+  "ring_radius": 29,
+  "ring_thickness": 3
 }
