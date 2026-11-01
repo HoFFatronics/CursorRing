@@ -4,5 +4,7 @@
     "yellow": "#FFE500",
     "white": "#FFFFFF",
     "black": "#111111"
-  }
+  },
+  "hotkey": "ctrl+alt+r",
+  "animation_seconds": 2.4
 }

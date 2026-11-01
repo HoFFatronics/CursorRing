@@ -16,6 +16,28 @@ Alla tre profilerna har **svart och vit kontur** runt ringen. Därmed kräver in
 
 Ändra valfria HEX-färger och `default_color` i `config.json`. Det ska finnas **exakt tre** namngivna färgprofiler.
 
+## Snabbtangent för att hitta pekaren
+
+Tryck **Ctrl+Alt+R** när CursorRing körs. Då blinkar ringen och växer/krymper **tre gånger under 2,4 sekunder**. Därefter återgår den till normal storlek. Muspilen syns hela tiden, med oförändrad klickpunkt.
+
+Tryck snabbtangenten igen för att starta om animationen. Tangentkombination och effektlängd ändras i `config.json`:
+
+```json
+{
+  "default_color": "yellow",
+  "colors": {
+    "yellow": "#FFE500",
+    "white": "#FFFFFF",
+    "black": "#111111"
+  },
+  "hotkey": "ctrl+alt+r",
+  "animation_seconds": 2.4
+}
+```
+
+Använd `ctrl`, `alt` och/eller `shift` tillsammans med en bokstav, siffra eller `F1` till `F11`. Minst en modifierare krävs. `animation_seconds` kan vara 0,5 till 10 sekunder.
+
+Programmet använder `RegisterHotKey` för systemövergripande snabbkommando och byter förgenererade muspekare via `SetSystemCursor`. På så sätt behövs inget separat överläggsfönster.
 ## Installation och körning
 
 Kräver Windows 10 eller 11, Python 3.10+ och Pillow.
