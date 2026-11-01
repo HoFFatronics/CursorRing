@@ -6,5 +6,7 @@
     "black": "#111111"
   },
   "hotkey": "ctrl+alt+r",
-  "animation_seconds": 2.4
+  "animation_seconds": 2.4,
+  "ring_radius": 23,
+  "ring_thickness": 1
 }
