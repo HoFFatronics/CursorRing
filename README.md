@@ -28,6 +28,7 @@ Keep the terminal open while CursorRing is running. Press **Ctrl+C** or click th
 | **Ctrl+Alt+3** | Select the second color profile. |
 | **Ctrl+Alt+4** | Select the third color profile. |
 | **Ctrl+Alt+0** | Open the color settings window. |
+| **Ctrl+Alt+P** | Toggle disco mode. |
 | **Ctrl+Alt+R** | Play the find animation on the active ring profile. |
 | **Ctrl+Shift + mouse wheel** | Increase or decrease the ring diameter. Scroll up to enlarge it; down to reduce it. |
 | **Ctrl+Alt + mouse wheel** | Increase or decrease the outline thickness. Scroll up to thicken it; down to thin it. |
@@ -35,6 +36,8 @@ Keep the terminal open while CursorRing is running. Press **Ctrl+C** or click th
 Each wheel step changes the diameter by 4 pixels. The diameter ranges from 30 to 90 pixels, allowing it to grow to about twice its default size. Outline thickness ranges from 1 to 9 pixels and changes by 1 pixel per wheel step. Both settings are saved in `config.json` and retained after restarting CursorRing.
 
 The find animation pulses and blinks the ring for a short time while keeping the mouse arrow visible. Press **Ctrl+Alt+R** again during the animation to restart it. The animation does not run while the normal Windows pointer is selected.
+
+Disco mode moves the ring's center around the mouse pointer on a 12-pixel orbit while the ring expands and contracts around the selected diameter and cycles through rainbow colors. The pointer and its click hotspot stay in place. Press **Ctrl+Alt+P** again to turn disco mode off. Selecting another pointer profile also exits it.
 
 ## Change profile colors
 
@@ -81,7 +84,7 @@ python cursor_ring.py --config .\config.json
 python cursor_ring.py --restore
 ```
 
-The configured animation shortcut and duration can be changed in `config.json`. Do not assign `ctrl+alt+0` through `ctrl+alt+4` to the animation shortcut; those are used for settings and profile selection.
+The configured animation shortcut and duration can be changed in `config.json`. Do not assign `ctrl+alt+0` through `ctrl+alt+4` or `ctrl+alt+p` to the animation shortcut; those are used for settings, profile selection, and disco mode.
 
 ## Screen recording
 

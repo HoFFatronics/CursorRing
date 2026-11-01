@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import colorsys
 import ctypes
 from ctypes import wintypes
 import json
@@ -30,6 +31,11 @@ RADIUS_STEP = 2
 MIN_THICKNESS = 1
 MAX_THICKNESS = 9
 DEFAULT_THICKNESS = 5
+DISCO_FRAME_COUNT = 36
+DISCO_CYCLE_SECONDS = 2.4
+DISCO_RADIUS_SWING = 10
+DISCO_ORBIT_RADIUS = 12
+MAX_DISCO_RADIUS = MAX_RADIUS + DISCO_RADIUS_SWING
 MIN_PULSE_RADIUS = 18
 MAX_PULSE_RADIUS = 36
 PULSE_COUNT = 3
@@ -65,6 +71,7 @@ CTRL_SHUTDOWN_EVENT = 6
 HOTKEY_ID = 1
 PROFILE_HOTKEY_START = 2
 SETTINGS_HOTKEY_ID = 6
+DISCO_HOTKEY_ID = 7
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
@@ -199,10 +206,11 @@ def adjust_ring_geometry(radius, thickness, wheel_delta, adjust_diameter):
     return radius, thickness
 
 
-def cursor_canvas_size(radius, thickness, system_arrow=None, arrow_hotspot=(0, 0)):
+def cursor_canvas_size(radius, thickness, system_arrow=None, arrow_hotspot=(0, 0),
+                      orbit_radius=0):
     """Return an even canvas size that contains the ring and its outlines."""
     outer_stroke = thickness + 6
-    ring_extent = max(radius, MAX_PULSE_RADIUS) + 3 + outer_stroke / 2
+    ring_extent = max(radius, MAX_PULSE_RADIUS) + 3 + outer_stroke / 2 + orbit_radius
     arrow_extent = 25
     if system_arrow is not None:
         arrow_width, arrow_height = system_arrow.size
@@ -336,8 +344,9 @@ def load_settings(path):
         raise ConfigurationError("default_color must match one of the color profiles.")
     hotkey = settings.get("hotkey", "ctrl+alt+r")
     hotkey_modifiers, hotkey_vk = parse_hotkey(hotkey)
-    if hotkey_modifiers == MOD_PROFILE and ord("0") <= hotkey_vk <= ord("4"):
-        raise ConfigurationError("hotkey cannot be Ctrl+Alt+0 through Ctrl+Alt+4; those shortcuts open settings and select profiles.")
+    if hotkey_modifiers == MOD_PROFILE and (
+            ord("0") <= hotkey_vk <= ord("4") or hotkey_vk == ord("P")):
+        raise ConfigurationError("hotkey cannot be Ctrl+Alt+0 through Ctrl+Alt+4 or Ctrl+Alt+P; these shortcuts control profiles and disco mode.")
     radius = settings.get("ring_radius", RADIUS)
     if (isinstance(radius, bool) or not isinstance(radius, int)
             or not MIN_RADIUS <= radius <= MAX_RADIUS
@@ -355,7 +364,8 @@ def load_settings(path):
 
 
 def create_cursor(path, color, radius=RADIUS, show_ring=True, thickness=DEFAULT_THICKNESS,
-                  canvas_size=None, system_arrow=None, arrow_hotspot=(0, 0)):
+                  canvas_size=None, system_arrow=None, arrow_hotspot=(0, 0),
+                  ring_offset=(0, 0)):
     """Build a 32-bit .cur file with a black/white bordered colored ring."""
     scale = 4
     size = canvas_size or cursor_canvas_size(radius, thickness, system_arrow, arrow_hotspot)
@@ -373,8 +383,10 @@ def create_cursor(path, color, radius=RADIUS, show_ring=True, thickness=DEFAULT_
             (radius, thickness, color),
         ):
             distance = current_radius * scale
-            bounds = (center - distance, center - distance,
-                      center + distance, center + distance)
+            ring_center_x = center + ring_offset[0] * scale
+            ring_center_y = center + ring_offset[1] * scale
+            bounds = (ring_center_x - distance, ring_center_y - distance,
+                      ring_center_x + distance, ring_center_y + distance)
             draw.ellipse(bounds, outline=rgba, width=width * scale)
 
     image = canvas.resize((size, size), Image.Resampling.LANCZOS)
@@ -593,9 +605,45 @@ def prepare_frames(directory, color, radius=RADIUS, thickness=DEFAULT_THICKNESS,
     return paths
 
 
+def prepare_disco_frames(directory, base_radius, thickness, system_arrow, arrow_hotspot):
+    """Pre-render a seamless rainbow cycle that pulses across the size range."""
+    directory.mkdir(parents=True, exist_ok=True)
+    minimum_radius = max(MIN_RADIUS, base_radius - DISCO_RADIUS_SWING)
+    maximum_radius = min(MAX_DISCO_RADIUS, base_radius + DISCO_RADIUS_SWING)
+    canvas_size = cursor_canvas_size(
+        maximum_radius, thickness, system_arrow, arrow_hotspot, DISCO_ORBIT_RADIUS
+    )
+    paths = []
+    for index in range(DISCO_FRAME_COUNT):
+        phase = index / DISCO_FRAME_COUNT
+        pulse = (1 - math.cos(phase * 2 * math.pi)) / 2
+        radius = round(minimum_radius + (maximum_radius - minimum_radius) * pulse)
+        angle = phase * 2 * math.pi
+        ring_offset = (
+            round(DISCO_ORBIT_RADIUS * math.cos(angle)),
+            round(DISCO_ORBIT_RADIUS * math.sin(angle)),
+        )
+        rgb = colorsys.hsv_to_rgb(phase, 1, 1)
+        color = tuple(round(channel * 255) for channel in rgb) + (255,)
+        path = directory / f"disco_{index:02d}.cur"
+        create_cursor(
+            path, color, radius=radius, thickness=thickness,
+            canvas_size=canvas_size, system_arrow=system_arrow,
+            arrow_hotspot=arrow_hotspot, ring_offset=ring_offset,
+        )
+        paths.append(path)
+    return paths
+
+
+def disco_frame_index(elapsed):
+    """Return the pre-rendered frame for the current point in the loop."""
+    phase = elapsed % DISCO_CYCLE_SECONDS
+    return int(phase / DISCO_CYCLE_SECONDS * DISCO_FRAME_COUNT)
+
+
 def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
         initial_profile, hotkey, duration, ring_radius, ring_thickness,
-        system_arrow, arrow_hotspot):
+        system_arrow, arrow_hotspot, disco_paths, disco_root):
     modifiers, vk = parse_hotkey(hotkey)
     profile_ids = {hotkey_id: index for hotkey_id, index, _, _ in profile_hotkeys()}
     registered_ids = []
@@ -615,6 +663,9 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
         if not api.RegisterHotKey(None, SETTINGS_HOTKEY_ID, MOD_PROFILE, ord("0")):
             raise OSError("Could not register the settings shortcut Ctrl+Alt+0. Another program may already be using it.")
         registered_ids.append(SETTINGS_HOTKEY_ID)
+        if not api.RegisterHotKey(None, DISCO_HOTKEY_ID, MOD_PROFILE, ord("P")):
+            raise OSError("Could not register the disco shortcut Ctrl+Alt+P. Another program may already be using it.")
+        registered_ids.append(DISCO_HOTKEY_ID)
 
         console_handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
 
@@ -652,6 +703,9 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
         settings_root = None
         settings_window = None
         pending_geometry = None
+        disco_active = False
+        disco_started = 0.0
+        last_disco_index = None
 
         def make_profile_paths(color_values, radius, thickness):
             generation = f"frames_{time.time_ns()}"
@@ -665,8 +719,12 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
                 )
             return generated
 
+        def make_disco_paths(radius, thickness):
+            directory = disco_root / f"thickness_{thickness}_{time.time_ns()}"
+            return prepare_disco_frames(directory, radius, thickness, system_arrow, arrow_hotspot)
+
         def save_colors(updated_colors):
-            nonlocal active_since, last_key
+            nonlocal active_since, last_key, last_disco_index
             try:
                 for color in updated_colors.values():
                     parse_hex_color(color)
@@ -674,8 +732,10 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
                 save_profile_colors(config_path, updated_colors)
                 colors.update(updated_colors)
                 profile_paths.update(new_paths)
-                if current_profile != 0:
-                    active_since = None
+                active_since = None
+                if current_profile != 0 and disco_active:
+                    last_disco_index = None
+                elif current_profile != 0:
                     name = profile_names[current_profile - 1]
                     enable(api, profile_paths[name]["normal"])
                     last_key = "normal"
@@ -685,9 +745,11 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
 
         def update_geometry(new_radius, new_thickness):
             nonlocal ring_radius, ring_thickness, active_since, last_key
+            nonlocal disco_paths, last_disco_index
             if (new_radius, new_thickness) == (ring_radius, ring_thickness):
                 return
             try:
+                new_disco_paths = make_disco_paths(new_radius, new_thickness)
                 if new_thickness != ring_thickness:
                     new_paths = make_profile_paths(colors, new_radius, new_thickness)
                 else:
@@ -708,7 +770,11 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
                 ring_radius = new_radius
                 ring_thickness = new_thickness
                 active_since = None
-                if current_profile != 0:
+                disco_paths = new_disco_paths
+                last_disco_index = None
+                if current_profile != 0 and disco_active:
+                    last_disco_index = None
+                elif current_profile != 0:
                     name = profile_names[current_profile - 1]
                     enable(api, profile_paths[name]["normal"])
                     last_key = "normal"
@@ -763,17 +829,19 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
         if not mouse_hook_handle:
             raise ctypes.WinError(ctypes.get_last_error())
 
-        print(f"CursorRing is running. Ctrl+Shift+Wheel: ring diameter | Ctrl+Alt+Wheel: ring thickness | Ctrl+Alt+1: default pointer | {labels} | Ctrl+Alt+0: color settings | {hotkey.upper()}: find effect. Press Ctrl+C to exit.")
+        print(f"CursorRing is running. Ctrl+Shift+Wheel: ring diameter | Ctrl+Alt+Wheel: ring thickness | Ctrl+Alt+1: default pointer | {labels} | Ctrl+Alt+0: color settings | Ctrl+Alt+P: disco mode | {hotkey.upper()}: find effect. Press Ctrl+C to exit.")
         msg = Message()
         while True:
             while api.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
                 if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
-                    if current_profile != 0:
+                    if current_profile != 0 and not disco_active:
                         active_since = time.monotonic()
                         next_frame_at = active_since
                 elif msg.message == WM_HOTKEY and msg.wParam in profile_ids:
                     profile_index = profile_ids[msg.wParam]
                     active_since = None
+                    disco_active = False
+                    last_disco_index = None
                     if profile_index == 0:
                         restore(api)
                         current_profile = 0
@@ -785,6 +853,19 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
                         last_key = "normal"
                 elif msg.message == WM_HOTKEY and msg.wParam == SETTINGS_HOTKEY_ID:
                     open_settings()
+                elif msg.message == WM_HOTKEY and msg.wParam == DISCO_HOTKEY_ID:
+                    if current_profile != 0:
+                        active_since = None
+                        disco_active = not disco_active
+                        if disco_active:
+                            disco_started = time.monotonic()
+                            next_frame_at = disco_started
+                            last_disco_index = None
+                        else:
+                            name = profile_names[current_profile - 1]
+                            enable(api, profile_paths[name]["normal"])
+                            last_key = "normal"
+                            last_disco_index = None
                 elif msg.message == WM_QUIT:
                     return
                 else:
@@ -801,7 +882,14 @@ def run(api, profile_paths, profile_dirs, profile_names, colors, config_path,
                 pending_geometry = None
                 update_geometry(new_radius, new_thickness)
             now = time.monotonic()
-            if current_profile != 0 and active_since is not None and now >= next_frame_at:
+            if (current_profile != 0 and disco_active and now >= next_frame_at):
+                frame_index = disco_frame_index(now - disco_started)
+                if frame_index != last_disco_index:
+                    enable(api, disco_paths[frame_index])
+                    last_disco_index = frame_index
+                next_frame_at = now + FRAME_INTERVAL
+            elif (current_profile != 0 and not disco_active
+                  and active_since is not None and now >= next_frame_at):
                 frame = animation_frame(now - active_since, duration)
                 if frame is None:
                     key = "normal"
@@ -885,10 +973,15 @@ def main(argv=None):
                     profile_dir, parse_hex_color(colors[name]), ring_radius, ring_thickness,
                     system_arrow, arrow_hotspot,
                 )
+            disco_root = Path(tempdir) / "disco"
+            disco_paths = prepare_disco_frames(
+                disco_root / f"thickness_{ring_thickness}", ring_radius, ring_thickness,
+                system_arrow, arrow_hotspot,
+            )
             initial_profile = profile_names.index(chosen) + 1
             run(api, profile_paths, profile_dirs, profile_names, colors,
                 args.config, initial_profile, hotkey, duration, ring_radius, ring_thickness,
-                system_arrow, arrow_hotspot)
+                system_arrow, arrow_hotspot, disco_paths, disco_root)
     except KeyboardInterrupt:
         pass
 
